@@ -100,8 +100,8 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
 app.post('/api/auth/google', async (req, res) => {
   try {
     const { OAuth2Client } = require('google-auth-library');
-    const WEB_CLIENT_ID = '548415947908-guukcb1uh0cs624fqmd1mlvcm8fd2m3d.apps.googleusercontent.com';
-    const ANDROID_CLIENT_ID = '548415947908-ls3tj54uv78plh7b3f6959on4be4tn83.apps.googleusercontent.com';
+    const WEB_CLIENT_ID = '447637886445-hc0ueb3uhb32jbopaka17dpg7ressutr.apps.googleusercontent.com';
+    const ANDROID_CLIENT_ID = '447637886445-gqblb65vc1045m51ncne3qmpvpnol5ri.apps.googleusercontent.com';
     const googleClient = new OAuth2Client(WEB_CLIENT_ID);
     const { idToken } = req.body;
     
