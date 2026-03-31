@@ -100,12 +100,18 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
 app.post('/api/auth/google', async (req, res) => {
   try {
     const { OAuth2Client } = require('google-auth-library');
-    const googleClient = new OAuth2Client('548415947908-guukcb1uh0cs624fqmd1mlvcm8fd2m3d.apps.googleusercontent.com');
+    const WEB_CLIENT_ID = '548415947908-guukcb1uh0cs624fqmd1mlvcm8fd2m3d.apps.googleusercontent.com';
+    const ANDROID_CLIENT_ID = '548415947908-ls3tj54uv78plh7b3f6959on4be4tn83.apps.googleusercontent.com';
+    const googleClient = new OAuth2Client(WEB_CLIENT_ID);
     const { idToken } = req.body;
+    
+    if (!idToken) {
+      return res.status(400).json({ error: 'idToken gerekli.' });
+    }
     
     const ticket = await googleClient.verifyIdToken({
       idToken,
-      audience: '548415947908-guukcb1uh0cs624fqmd1mlvcm8fd2m3d.apps.googleusercontent.com',
+      audience: [WEB_CLIENT_ID, ANDROID_CLIENT_ID],
     });
     const payload = ticket.getPayload();
     const { email, name } = payload;
