@@ -4,7 +4,7 @@ const dotenv = require('dotenv');
 const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
 // Load env vars
@@ -91,7 +91,7 @@ app.post('/api/auth/login', async (req, res) => {
 app.get('/api/auth/me', authenticateToken, async (req, res) => {
   try {
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
-    res.json({ id: user.id, username: user.username, email: user.email, isPremium: user.isPremium });
+    res.json({ id: user.id, username: user.username, email: user.email, bio: user.bio, profileImage: user.profileImage, isPremium: user.isPremium });
   } catch(err) {
     res.status(500).json({ error: err.message });
   }
@@ -250,6 +250,9 @@ app.post('/api/videos/:id/like', authenticateToken, async (req, res) => {
       return res.json({ liked: false });
     } else {
       await prisma.like.create({ data: { userId: req.user.id, videoId } });
+      // Bildirim gönder
+      const video = await prisma.video.findUnique({ where: { id: videoId }, select: { authorId: true } });
+      if (video) await createNotification('like', req.user.id, video.authorId, videoId);
       return res.json({ liked: true });
     }
   } catch (err) {
@@ -271,6 +274,9 @@ app.post('/api/videos/:id/comment', authenticateToken, async (req, res) => {
       },
       include: { user: { select: { id: true, username: true } } }
     });
+    // Bildirim gönder
+    const video = await prisma.video.findUnique({ where: { id: videoId }, select: { authorId: true } });
+    if (video) await createNotification('comment', req.user.id, video.authorId, videoId);
     res.json(newComment);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -309,6 +315,7 @@ app.post('/api/users/:id/follow', authenticateToken, async (req, res) => {
       return res.json({ following: false });
     } else {
       await prisma.follow.create({ data: { followerId, followingId } });
+      await createNotification('follow', followerId, followingId, null);
       return res.json({ following: true });
     }
   } catch (err) {
@@ -325,6 +332,8 @@ app.get('/api/users/:id/profile', authenticateToken, async (req, res) => {
       select: {
         id: true,
         username: true,
+        bio: true,
+        profileImage: true,
         isPremium: true,
         _count: {
           select: { followers: true, following: true, videos: true }
@@ -348,6 +357,175 @@ app.get('/api/users/:id/profile', authenticateToken, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// --- SEARCH ROUTALARI ---
+app.get('/api/search', async (req, res) => {
+  try {
+    const { q, type } = req.query;
+    if (!q || q.trim().length === 0) {
+      return res.status(400).json({ error: 'Arama sorgusu gerekli.' });
+    }
+    const query = q.trim();
+
+    if (type === 'users') {
+      const users = await prisma.user.findMany({
+        where: {
+          OR: [
+            { username: { contains: query, mode: 'insensitive' } },
+            { bio: { contains: query, mode: 'insensitive' } },
+          ]
+        },
+        select: { id: true, username: true, bio: true, profileImage: true, isPremium: true, _count: { select: { followers: true, videos: true } } },
+        take: 20,
+      });
+      return res.json({ users, videos: [] });
+    }
+
+    if (type === 'videos') {
+      const videos = await prisma.video.findMany({
+        where: { description: { contains: query, mode: 'insensitive' } },
+        include: { author: { select: { id: true, username: true, profileImage: true } }, _count: { select: { likes: true, comments: true } } },
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+      });
+      return res.json({ users: [], videos });
+    }
+
+    // Both
+    const [users, videos] = await Promise.all([
+      prisma.user.findMany({
+        where: {
+          OR: [
+            { username: { contains: query, mode: 'insensitive' } },
+            { bio: { contains: query, mode: 'insensitive' } },
+          ]
+        },
+        select: { id: true, username: true, bio: true, profileImage: true, isPremium: true, _count: { select: { followers: true, videos: true } } },
+        take: 10,
+      }),
+      prisma.video.findMany({
+        where: { description: { contains: query, mode: 'insensitive' } },
+        include: { author: { select: { id: true, username: true, profileImage: true } }, _count: { select: { likes: true, comments: true } } },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+      }),
+    ]);
+    res.json({ users, videos });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- VIDEO SİLME ---
+app.delete('/api/videos/:id', authenticateToken, async (req, res) => {
+  try {
+    const videoId = req.params.id;
+    const video = await prisma.video.findUnique({ where: { id: videoId } });
+    if (!video) return res.status(404).json({ error: 'Video bulunamadı.' });
+    if (video.authorId !== req.user.id) return res.status(403).json({ error: 'Bu videoyu silme yetkiniz yok.' });
+
+    // R2'den videoyu sil
+    if (video.url) {
+      try {
+        const key = video.url.replace(process.env.R2_PUBLIC_URL + '/', '');
+        await s3Client.send(new DeleteObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: key }));
+      } catch (r2Err) {
+        console.error('R2 silme hatası:', r2Err.message);
+      }
+    }
+
+    await prisma.video.delete({ where: { id: videoId } });
+    res.json({ deleted: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- PROFİL GÜNCELLEME ---
+app.put('/api/users/profile', authenticateToken, async (req, res) => {
+  try {
+    const { username, bio, profileImage } = req.body;
+    const updateData = {};
+
+    if (username !== undefined) {
+      // Check uniqueness
+      const existing = await prisma.user.findFirst({ where: { username, NOT: { id: req.user.id } } });
+      if (existing) return res.status(400).json({ error: 'Bu kullanıcı adı zaten alınmış.' });
+      updateData.username = username;
+    }
+    if (bio !== undefined) updateData.bio = bio;
+    if (profileImage !== undefined) updateData.profileImage = profileImage;
+
+    const updatedUser = await prisma.user.update({
+      where: { id: req.user.id },
+      data: updateData,
+      select: { id: true, username: true, email: true, bio: true, profileImage: true, isPremium: true },
+    });
+    res.json(updatedUser);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Profil fotoğrafı upload URL'i
+app.get('/api/users/profile-image-url', authenticateToken, async (req, res) => {
+  try {
+    const key = `profile-images/${req.user.id}-${Date.now()}.jpg`;
+    const command = new PutObjectCommand({
+      Bucket: process.env.R2_BUCKET_NAME,
+      Key: key,
+      ContentType: 'image/jpeg',
+    });
+    const url = await getSignedUrl(s3Client, command, { expiresIn: 15 * 60 });
+    res.json({ url, key, publicUrl: `${process.env.R2_PUBLIC_URL}/${key}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- BİLDİRİM ROUTALARI ---
+app.get('/api/notifications', authenticateToken, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = 20;
+    const notifications = await prisma.notification.findMany({
+      where: { receiverId: req.user.id },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      skip: (page - 1) * limit,
+      include: {
+        sender: { select: { id: true, username: true, profileImage: true } },
+        video: { select: { id: true, url: true, description: true } },
+      },
+    });
+    const unreadCount = await prisma.notification.count({
+      where: { receiverId: req.user.id, read: false },
+    });
+    res.json({ notifications, unreadCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/notifications/read', authenticateToken, async (req, res) => {
+  try {
+    await prisma.notification.updateMany({
+      where: { receiverId: req.user.id, read: false },
+      data: { read: true },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Helper: Bildirim oluştur (internal)
+async function createNotification(type, senderId, receiverId, videoId) {
+  if (senderId === receiverId) return; // Kendi kendine bildirim gönderme
+  await prisma.notification.create({
+    data: { type, senderId, receiverId, videoId },
+  });
+}
 
 // START SERVER
 const PORT = process.env.PORT || 3000;

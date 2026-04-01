@@ -12,6 +12,8 @@ model User {
   username     String    @unique
   email        String    @unique
   passwordHash String
+  bio          String?
+  profileImage String?
   isPremium    Boolean   @default(false)
   createdAt    DateTime  @default(now())
   videos       Video[]
@@ -19,17 +21,20 @@ model User {
   comments     Comment[]
   followers    Follow[]  @relation("follower")
   following    Follow[]  @relation("following")
+  notifications     Notification[] @relation("notificationReceiver")
+  sentNotifications Notification[] @relation("notificationSender")
 }
 
 model Video {
-  id          String    @id @default(uuid())
-  url         String
-  description String?
-  createdAt   DateTime  @default(now())
-  authorId    String
-  author      User      @relation(fields: [authorId], references: [id], onDelete: Cascade)
-  likes       Like[]
-  comments    Comment[]
+  id            String         @id @default(uuid())
+  url           String
+  description   String?
+  createdAt     DateTime       @default(now())
+  authorId      String
+  author        User           @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  likes         Like[]
+  comments      Comment[]
+  notifications Notification[]
 }
 
 model Like {
@@ -62,4 +67,17 @@ model Follow {
   following   User     @relation("following", fields: [followingId], references: [id], onDelete: Cascade)
 
   @@unique([followerId, followingId])
+}
+
+model Notification {
+  id         String   @id @default(uuid())
+  type       String   // "like", "comment", "follow"
+  read       Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  receiverId String
+  senderId   String
+  videoId    String?
+  receiver   User     @relation("notificationReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
+  sender     User     @relation("notificationSender", fields: [senderId], references: [id], onDelete: Cascade)
+  video      Video?   @relation(fields: [videoId], references: [id], onDelete: Cascade)
 }
